@@ -11,8 +11,7 @@ import pandas as pd
 BASE_DIR = Path(__file__).resolve().parent
 QDISC_DIR = BASE_DIR / "tmp"
 OUTPUT_DIR = BASE_DIR / "outputs"
-CACHE_FILE = BASE_DIR / "dtw_cache.txt"
-CACHE_TAG = "B"
+DIFF_FILE = BASE_DIR / "dtw_cache_differences.txt"
 
 # ============ Config ============
 NUM_PROCESSES = max(1, cpu_count() - 1)
@@ -63,24 +62,6 @@ def dtw_distance(a, b):
         prev, curr = curr, prev
     return prev[m]
 
-# ============ Cache I/O ============
-def load_cache(path: Path, tag="B"):
-    cache = {}
-    if not path.exists():
-        return cache
-    with open(path, "r") as f:
-        for line in f:
-            parts = line.strip().split(",")
-            if len(parts) == 4 and parts[3] == tag:
-                i, j = int(parts[0]), int(parts[1])
-                d = float(parts[2])
-                cache[(i, j)] = d
-    return cache
-
-def append_to_cache(path: Path, i: int, j: int, d: float, tag="B"):
-    with open(path, "a") as f:
-        f.write(f"{i},{j},{d:.6f},{tag}\n")
-
 # ============ Worker ============
 def compute_pair(pair):
     qi, qf, oi, of = pair
@@ -99,33 +80,29 @@ if __name__ == "__main__":
     qdisc_pairs = [(int(f.stem.split("_")[1]), f) for f in qdisc_files]
     mahi_pairs = [(int(f.stem.split("_")[1]), f) for f in output_files]
 
-    cache = load_cache(CACHE_FILE, tag="B")
-    jobs = []
-
-    for (qi, qf), (oi, of) in product(qdisc_pairs, mahi_pairs):
-        if (qi, oi) not in cache:
-            jobs.append((qi, qf, oi, of))
-
-    print(f"Computing {len(jobs)} new DTW pairs (qdisc × mahimahi)...")
+    jobs = [(qi, qf, oi, of) for (qi, qf), (oi, of) in product(qdisc_pairs, mahi_pairs)]
+    print(f"Computing {len(jobs)} DTW pairs (qdisc × mahimahi)...")
 
     results = []
-    if jobs:
-        with Pool(processes=NUM_PROCESSES) as pool:
-            for result in pool.imap_unordered(compute_pair, jobs):
-                if result:
-                    qi, oi, d = result
-                    print(f"DTW({qi}, {oi}) = {d:.3f}")
-                    append_to_cache(CACHE_FILE, qi, oi, d, tag="B")
-                    cache[(qi, oi)] = d
-                    results.append(d)
-    else:
-        results = list(cache.values())
+    with Pool(processes=NUM_PROCESSES) as pool:
+        for result in pool.imap_unordered(compute_pair, jobs):
+            if result:
+                qi, oi, d = result
+                results.append((qi, oi, d))
+                print(f"DTW({qi}, {oi}) = {d:.3f}")
+
+    # Save results to text file
+    with open(DIFF_FILE, "w") as f:
+        for qi, oi, d in results:
+            f.write(f"{qi},{oi},{d:.6f}\n")
+
+    print(f"\nSaved {len(results)} DTW results to {DIFF_FILE}")
 
     # ========== Plotting ==========
-    print(f"Loaded {len(cache)} total DTW distances with tag B")
-
     if results:
-        sorted_d = sorted(results)
+        distances = [d for _, _, d in results]
+
+        sorted_d = sorted(distances)
         cdf = [i / len(sorted_d) for i in range(len(sorted_d))]
 
         # CDF
@@ -140,7 +117,7 @@ if __name__ == "__main__":
 
         # PDF
         plt.figure(figsize=(8, 6))
-        sns.histplot(results, bins=30, kde=True, stat="density", edgecolor='black', alpha=0.7)
+        sns.histplot(distances, bins=30, kde=True, stat="density", edgecolor='black', alpha=0.7)
         plt.xlabel("Normalized DTW Distance")
         plt.ylabel("Density")
         plt.title("PDF — Normalized DTW (qdisc × mahimahi)")
@@ -150,7 +127,7 @@ if __name__ == "__main__":
 
         # Boxplot
         plt.figure(figsize=(8, 5))
-        box = plt.boxplot(results, patch_artist=True, showmeans=True)
+        box = plt.boxplot(distances, patch_artist=True, showmeans=True)
         for patch in box['boxes']:
             patch.set_facecolor('#a2cffe')
         plt.xticks([])
@@ -161,10 +138,10 @@ if __name__ == "__main__":
         plt.show()
 
         # Heatmap
-        matrix_df = pd.DataFrame(index=sorted(set(qi for qi, _ in cache)),
-                                 columns=sorted(set(oi for _, oi in cache)),
+        matrix_df = pd.DataFrame(index=sorted(set(qi for qi, _, _ in results)),
+                                 columns=sorted(set(oi for _, oi, _ in results)),
                                  dtype=float)
-        for (qi, oi), d in cache.items():
+        for qi, oi, d in results:
             matrix_df.at[qi, oi] = d
 
         plt.figure(figsize=(10, 8))

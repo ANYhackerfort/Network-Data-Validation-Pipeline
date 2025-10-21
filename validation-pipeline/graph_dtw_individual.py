@@ -14,10 +14,14 @@ except NameError:
 
 QDISC_DIR = BASE_DIR / "tmp"
 OUTPUT_DIR = BASE_DIR / "outputs"
-CACHE_FILE = BASE_DIR / "dtw_cache.txt"
+
+# Use separate cache files for each mode
+CACHE_FILE_QDISC = BASE_DIR / "dtw_cache_qdisc.txt"
+CACHE_FILE_MAHI = BASE_DIR / "dtw_cache_mahi.txt"
 
 # ============ Configuration ============
-COMPARE_QDISC = False  # Set to False to compare mahi_*.txt instead
+COMPARE_QDISC = True  # Set to False to compare mahi_*.txt instead
+CACHE_FILE = CACHE_FILE_QDISC if COMPARE_QDISC else CACHE_FILE_MAHI
 
 # ============ Parsers ============
 def read_qdisc_series(path: str | Path):
@@ -73,7 +77,7 @@ def compute_dtw_for_pair(pair, series_dict):
     d = dtw_distance(a, b)
     return (i, j, d)
 
-# ============ Load Cache ============
+# ============ Cache Utilities ============
 def load_cache(path: Path):
     cache = {}
     if not path.exists():
@@ -81,51 +85,53 @@ def load_cache(path: Path):
     with open(path, "r") as f:
         for line in f:
             parts = line.strip().split(",")
-            if len(parts) < 3:
+            if len(parts) != 3:
                 continue
-            i, j = int(parts[0]), int(parts[1])
-            d = float(parts[2])
-            is_mahi = len(parts) == 4 and parts[3] == "M"
-            if COMPARE_QDISC and not is_mahi:
-                cache[(i, j)] = d
-                cache[(j, i)] = d
-            elif not COMPARE_QDISC and is_mahi:
-                cache[(i, j)] = d
-                cache[(j, i)] = d
+            i, j, d = int(parts[0]), int(parts[1]), float(parts[2])
+            cache[(i, j)] = d
+            cache[(j, i)] = d
     return cache
 
-# ============ Append to Cache ============
 def append_to_cache(path: Path, i, j, d):
-    tag = ",M" if not COMPARE_QDISC else ""
     with open(path, "a") as f:
-        f.write(f"{i},{j},{d:.6f}{tag}\n")
+        f.write(f"{i},{j},{d:.6f}\n")
 
 # ============ Main ============
 if __name__ == "__main__":
-    qdisc_files = sorted([f for f in QDISC_DIR.glob("qdisc_*.log")])
-    output_files = sorted([f for f in OUTPUT_DIR.glob("output_*.txt")])
+    qdisc_files = sorted(QDISC_DIR.glob("qdisc_*.log"))
+    output_files = sorted(OUTPUT_DIR.glob("output_*.txt"))
     series_dict = {}
 
     if COMPARE_QDISC:
+        print("🟦 Mode: QDISC (using tmp/qdisc_*.log files)")
         for f in qdisc_files:
             idx = int(f.stem.split("_")[1])
             series_dict[idx] = read_qdisc_series(f)
     else:
+        print("🟩 Mode: MAHIMAHI (using outputs/output_*.txt files)")
         for f in output_files:
             idx = int(f.stem.split("_")[1])
             series_dict[idx] = read_mahi_series(f)
+
+    if not series_dict:
+        print("⚠️ No files found for this mode. Check your directory paths.")
+        exit(1)
 
     keys = list(series_dict.keys())
     pairs = list(combinations(keys, 2))
 
     cache = load_cache(CACHE_FILE)
-    distances = dict(cache)  # include cached distances
+    distances = dict(cache)
     distance_values = [d for (i, j), d in cache.items() if i < j]
 
     # Filter out pairs already cached
     pairs_to_compute = [pair for pair in pairs if pair not in cache]
 
-    # Parallelized DTW
+    print(f"Loaded {len(series_dict)} series.")
+    print(f"Found {len(cache)} cached DTWs.")
+    print(f"Computing {len(pairs_to_compute)} new pairs...")
+
+    # ---------- Parallelized DTW ----------
     if pairs_to_compute:
         with ProcessPoolExecutor() as executor:
             futures = {executor.submit(compute_dtw_for_pair, pair, series_dict): pair for pair in pairs_to_compute}
@@ -147,7 +153,7 @@ if __name__ == "__main__":
 
         plt.figure(figsize=(10, 8))
         sns.heatmap(matrix_df, annot=True, fmt=".2f", cmap="coolwarm", cbar_kws={"label": "Normalized DTW"})
-        plt.title("Pairwise Normalized DTW Matrix" + (" (qdisc)" if COMPARE_QDISC else " (output)"))
+        plt.title("Pairwise Normalized DTW Matrix" + (" (QDISC)" if COMPARE_QDISC else " (MAHIMAHI)"))
         plt.xlabel("Index")
         plt.ylabel("Index")
         plt.tight_layout()
