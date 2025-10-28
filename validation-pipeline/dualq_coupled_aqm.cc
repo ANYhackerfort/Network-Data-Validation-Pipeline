@@ -75,17 +75,6 @@ DualQCoupledAQM::DualQCoupledAQM( const string & args )
 
     /* Start the periodic process that updates probs*/
     set_periodic_update ();
-    // set_periodic_update_1 ();
-
-    // const timespec print_interval { 0, 20 * NS_PER_MS };
-    // timer_.set_time( print_interval, print_interval );
-    // poller_.add_action( Poller::Action( timer_, Direction::In,
-    //     [&] () {
-    //         std::cout << "[Queue size] " << size_bytes() << " bytes in queue" << std::endl;
-    //         timer_.read();
-    //         return ResultType::Continue;
-    //     }
-    // ) );
 
     //std::cout << "end of the ctor " << std::endl;
     //std::cout << "packet_limit_= " << std::to_string(packet_limit_) << " byte_limit_= " << std::to_string(byte_limit_) << std::endl;
@@ -102,7 +91,7 @@ void DualQCoupledAQM::enqueue( QueuedPacket && p )
 
     // check if the periodic update function is due, return immediately if not.
     std::cout << "> Polling (start of enqueue)" << std::endl;
-    poller_.poll(0);
+    poller_.poll( 0 );
 
     if ( size_bytes() + MTU > byte_limit_) {
         std::cout << "> Drop due to saturationnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn!! " << std::endl;
@@ -151,9 +140,7 @@ QueuedPacket DualQCoupledAQM::dequeue( void )
 
         if ( dequeue_from == QueueType::L4S ) {
             std::cout << "> Scheduler selects L4S..." << std::endl;
-
             pkt = l4s_queue_.dequeue();
-            std::cout << pkt.contents.size() << std::endl;
             
             if ( not l4s_is_overloaded() ) {
                 now = timestamp();
@@ -173,10 +160,7 @@ QueuedPacket DualQCoupledAQM::dequeue( void )
                 if ( recur(l4s_queue_, p_c_) ) {
                     if ( can_mark_or_drop() ) 
                     {
-
                         drop("saturation");
-                        std::cout << "l4s drop" << std::endl;
-                        std::cout << pkt.contents.size() << std::endl;
                         continue;
                     }
                 } 
@@ -192,8 +176,7 @@ QueuedPacket DualQCoupledAQM::dequeue( void )
         } 
         else if ( dequeue_from == QueueType::Classic ) { 
             std::cout << "> Scheduler selects Classic..." << std::endl;
-            pkt = classic_queue_.dequeue();   
-            std::cout << pkt.contents.size() << std::endl;    
+            pkt = classic_queue_.dequeue();       
             
             if ( recur(classic_queue_, p_c_) ) {
                 if ( get_ecn_bits( pkt ) == IPTOS_ECN_NOT_ECT ||
@@ -202,8 +185,6 @@ QueuedPacket DualQCoupledAQM::dequeue( void )
                         {
                             std::cout << " ---- DROPPING !! " << std::endl;
                             drop("");
-                            std::cout << "classic drop" << std::endl;
-                            std::cout << pkt.contents.size() << std::endl;
                             continue;
                         }
                 }
@@ -339,25 +320,11 @@ void DualQCoupledAQM::set_periodic_update( void )
                                             cout << "pp =  " << std::to_string(pp_) << endl;
                                             cout << "p_c =  " << std::to_string(p_c_) << endl;
                                             cout << "p_cl =  " << std::to_string(p_cl_) << endl;
-
-                                            cout << "queue size in bytes: " << size_bytes() << endl;
+                                            
+                                            cout << "queue size in bytes: " << size_bytes() << endl; 
                                             
                                             return ResultType::Continue;
                                         } ) ); 
-}
-
-void DualQCoupledAQM::set_periodic_update_1(void)
-{
-    const timespec interval{0, 1 * NS_PER_MS};
-    timer_aux_.set_time(interval, interval);
-
-    poller_.add_action(Poller::Action(timer_aux_, Direction::In,
-        [&]() {
-            timer_aux_.read();  // <-- must drain separately
-            // std::cout << "set_periodic_update_1 function called!\n"
-            //           << "queue size in bytes: " << size_bytes() << std::endl;
-            return ResultType::Continue;
-        }));
 }
 
 // void DualQCoupledAQM::print_state( void )
@@ -392,23 +359,23 @@ double DualQCoupledAQM::calculate_base_aqm_prob( uint64_t ref )
     cout << ">> [new] l4s_qdelay_ms = " << std::to_string(l4s_qdelay_ms_) << endl;
     cout << ">> [new] classic_qdelay_ms = " << std::to_string(classic_qdelay_ms_) << endl;
 
-    double new_prob = (static_cast<double>(qdelay) - target_ms_) * alpha_ 
-                    + (static_cast<double>(qdelay) - qdelay_old) * beta_;
-    
-    cout << ">> new_prob = " << std::to_string(new_prob) << endl;
+    double new_pp = (static_cast<double>(qdelay) - target_ms_) * alpha_ +
+                    (static_cast<double>(qdelay) - qdelay_old) * beta_  + pp_;
 
-    if ( new_prob > 1.0 ) {
+    // cout << ">> new_prob = " << std::to_string(new_prob) << endl;
+
+    if ( new_pp > 1.0 ) {
         // prevent overflow
-        new_prob = 1.0;
+        new_pp = 1.0;
     }
-    else if ( new_prob < 0.0) {
+    else if ( new_pp < 0.0) {
         // prevent underflow
-        new_prob = 0.0;
+        new_pp = 0.0;
     }
 
     // TODO: check the capping of p' if no drop on overload
 
-    return new_prob;
+    return new_pp;
 }
 
 // unsigned int DualQCoupledAQM::get_arg( const string & args, const string & name )

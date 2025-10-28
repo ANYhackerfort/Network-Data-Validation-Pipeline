@@ -18,31 +18,55 @@ PKTS=200
 
 # ========== Helper: Clean Up Mahimahi Environment ==========
 cleanup_network() {
-  echo "[*] Cleaning up any leftover Mahimahi namespaces, qdiscs, and veth links..."
+  echo "[*] Cleaning up Mahimahi environment..."
 
-  # Kill any mahimahi or iperf processes
-  sudo pkill -9 mahimahi 2>/dev/null || true
-  sudo pkill -9 mm-link 2>/dev/null || true
-  sudo pkill -9 mm-delay 2>/dev/null || true
-  sudo pkill -9 mm-meter 2>/dev/null || true
-  sudo pkill -9 iperf3 2>/dev/null || true
+  kill_and_report() {
+    local proc=$1
+    if pgrep -f "$proc" >/dev/null; then
+      echo "    [KILL] Found and killing: $proc"
+      sudo pkill -9 "$proc" 2>/dev/null || true
+    else
+      echo "    [SKIP] No process found for: $proc"
+    fi
+  }
 
-  # Remove stale network namespaces
-  for ns in $(sudo ip netns list | awk '{print $1}'); do
-    echo "    [-] Deleting namespace: $ns"
-    sudo ip netns delete "$ns" 2>/dev/null || true
+  kill_and_report "mahimahi"
+  kill_and_report "mm-link"
+  kill_and_report "mm-delay"
+  kill_and_report "mm-meter"
+  kill_and_report "iperf3"
+
+  # Remove stale namespaces
+  ns_list=$(sudo ip netns list | awk '{print $1}')
+  if [[ -n "$ns_list" ]]; then
+    for ns in $ns_list; do
+      echo "    [DEL] Namespace: $ns"
+      sudo ip netns delete "$ns" 2>/dev/null || true
+    done
+  else
+    echo "    [SKIP] No leftover namespaces."
+  fi
+
+  # Delete any leftover veth interfaces
+  veth_list=$(ip link show | grep -oE 'veth[^:@ ]+')
+  if [[ -n "$veth_list" ]]; then
+    for v in $veth_list; do
+      echo "    [DEL] veth interface: $v"
+      sudo ip link delete "$v" 2>/dev/null || true
+    done
+  else
+    echo "    [SKIP] No leftover veth interfaces."
+  fi
+
+  # Flush qdiscs
+  dev_list=$(ip -o link show | awk -F': ' '{print $2}')
+  for dev in $dev_list; do
+    if sudo tc qdisc show dev "$dev" 2>/dev/null | grep -q "qdisc"; then
+      echo "    [FLUSH] qdisc on $dev"
+      sudo tc qdisc del dev "$dev" root 2>/dev/null || true
+    fi
   done
-
-  # Delete any veth pairs left behind by Mahimahi
-  for v in $(ip link show | grep -oE 'veth[^:@ ]+'); do
-    echo "    [-] Deleting leftover veth: $v"
-    sudo ip link delete "$v" 2>/dev/null || true
-  done
-
-  # Flush qdiscs on common interfaces (eth0, lo, etc.)
-  for dev in $(ip -o link show | awk -F': ' '{print $2}'); do
-    sudo tc qdisc del dev "$dev" root 2>/dev/null || true
-  done
+  echo "    [OK] Cleanup complete."
 }
 
 # ========== Run Loop ==========
@@ -61,26 +85,24 @@ while [[ $RUNS_LEFT -gt 0 ]]; do
   echo ""
   echo "[*] === RUN $((NUM_RUNS - RUNS_LEFT + 1))/$NUM_RUNS ==="
 
-  cleanup_network
-  sleep 2
-  while pgrep -f mm-link >/dev/null || pgrep -f iperf3 >/dev/null; do
-    echo "[!] Waiting for previous processes to die..."
-    sleep 1
-  done
+  # Check for hanging processes before starting
+  if pgrep -f mm-link >/dev/null || pgrep -f iperf3 >/dev/null; then
+    echo "[!] Detected leftover Mahimahi or iperf3 processes. Running cleanup..."
+    cleanup_network
+    sleep 2
+  else
+    echo "[*] Environment clean — no manual cleanup needed."
+  fi
 
   echo "[*] Output log: $OUT_FILE"
   echo "[*] Flow log  : $FLOW_FILE"
-
-  echo "[*] Stopping any existing iperf3 servers..."
-  sudo pkill -9 iperf3 2>/dev/null || true
-  sleep 2
 
   echo "[*] Starting iperf3 server on port 5300..."
   iperf3 -s -p 5300 > /dev/null 2>&1 &
   IPERF_SERVER_PID=$!
 
-  echo "[*] Starting DualPI2 L4S test in 1 second..."
-  sleep 4
+  echo "[*] Starting DualPI2 L4S test in 2 seconds..."
+  sleep 2
 
   mm-delay $DELAY mm-link --meter-all \
     --uplink-queue=dualPI2 \
@@ -89,25 +111,36 @@ while [[ $RUNS_LEFT -gt 0 ]]; do
       target=16,\
       tupdate=16,\
       alpha=0.16,\
-      beta=0.16" \
+      beta=3" \
     "$TRACE_UP" "$TRACE_DOWN" -- bash -c "
       echo '[+] Starting constant UDP iperf3 flow (port 5300)...'
       iperf3 -c 10.0.0.1 -p 5300 -u -b 12M -l 1200 -t $SECS --tos $CLASSIC_TOS --interval 1 \
         2>&1 | tee \"$FLOW_FILE\"
+      echo '[+] Flow finished. Exiting Mahimahi shell...'
     " >> "$OUT_FILE" 2>&1
 
   echo "[*] FINISHED DualPI2 test. Cleaning up iperf3 server..."
-  kill $IPERF_SERVER_PID 2>/dev/null || true
+  if kill $IPERF_SERVER_PID 2>/dev/null; then
+    echo "    [KILL] iperf3 server terminated."
+  else
+    echo "    [SKIP] iperf3 server already stopped."
+  fi
 
   echo "[*] Completed run $((NUM_RUNS - RUNS_LEFT + 1))/$NUM_RUNS"
-  echo "[*] Cooling down 5s before next run..."
-  sleep 5
+  echo "[*] Cooling down 10s before next run..."
+  sleep 10
 
   ((RUNS_LEFT--))
   ((NEXT_IDX++))
 done
 
-cleanup_network
+# Final cleanup if needed
+if pgrep -f mm-link >/dev/null || pgrep -f iperf3 >/dev/null; then
+  echo "[!] Performing final cleanup..."
+  cleanup_network
+else
+  echo "[*] No leftover processes after final run. Clean exit."
+fi
 
 echo ""
 echo "[*] All $NUM_RUNS run(s) complete. Logs saved in: $OUT_DIR/"
