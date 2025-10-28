@@ -59,8 +59,8 @@ DualQCoupledAQM::DualQCoupledAQM( const string & args )
         14:   beta = 0.3 / RTT_max                   % PI proportional gain in Hz */
     
     // Since the default time unit is ms, alpha and beta have to be in kHz
-    if ( alpha_ == 0 ) alpha_ = 0.00016;
-    if ( beta_ == 0 ) beta_ = 0.0032;
+    if ( alpha_ == 0 ) alpha_ = 0.16;
+    if ( beta_ == 0 ) beta_ = 3.2;
     
 
     if (scheduler_type_ == SchedulerType::WRR) {
